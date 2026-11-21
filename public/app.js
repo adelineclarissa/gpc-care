@@ -1,4 +1,5 @@
 import {icon} from './icons.js';
+import * as motion from './motion.js';
 
 const root=document.querySelector('#app');
 const dialog=document.querySelector('#dialog');
@@ -82,7 +83,7 @@ const pages={
   birthdays:()=>pageTitle('Birthdays','See upcoming birthdays for your church members.')+`<section class="card table-card"><div class="card-header"><h2>Next 12 months</h2></div>${birthdayRows(birthdays(365))}</section>`,
   settings:()=>pageTitle('Settings','Manage notifications for your account.')+`<div class="stack settings-grid"><section class="card panel stack"><div><h2>Push notifications</h2><p class="muted">Enable push on each device you want to use. On iPhone or iPad, add ChurchCare to your Home Screen from Safari, then open it there.</p></div><div><button class="button primary" data-action="push-enable">Enable on this device</button> <button class="button" data-action="push-disable">Disable on this device</button></div>${installPrompt?btn('Install ChurchCare','install') : ''}</section><section class="card panel"><h2>Reminder preferences</h2><form id="preferences" class="stack"><div>${[['birthdays','Birthday reminders'],['inactivity','Inactivity alerts'],['followups','Follow-up due dates']].map(([key,label])=>`<label class="check-row"><input type="checkbox" name="${key}" ${state.preferences[key]?'checked':''}> ${label}</label>`).join('')}</div><label class="field">Telegram fallback chat ID<input name="telegram" inputmode="numeric" value="${esc(state.preferences.telegram)}" ${state.telegramAvailable?'':'disabled'} placeholder="${state.telegramAvailable?'Private chat ID':'Telegram is not configured'}"></label><p class="muted">When push delivery fails or no device is subscribed, ChurchCare can send your reminder to a private Telegram chat.</p><div><button class="button primary">Save Preferences</button></div></form></section></div>`
 };
-function render(){if(state){const key=route();layout(key,pages[key]());document.title=routes[key][0]+' · ChurchCare';}}
+function render(first=false){if(state){const key=route();layout(key,pages[key]());document.title=routes[key][0]+' · ChurchCare';motion.shellIn(first);motion.pageIn();}}
 async function api(path,method='GET',data){
   const response=await fetch('/api/'+path,{method,headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json();
@@ -90,13 +91,16 @@ async function api(path,method='GET',data){
   return result;
 }
 function notify(text){
-  const node=document.querySelector('#toast');node.textContent=text;
-  clearTimeout(toastTimer);toastTimer=setTimeout(()=>{node.textContent='';},4200);
+  const node=document.querySelector('#toast');node.textContent=text;motion.toastIn();
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>motion.toastOut(()=>{node.textContent='';}),4200);
 }
 function modal(title,html){
+  motion.stopModalOut();
   dialog.innerHTML=`<header class="modal-head"><h2>${esc(title)}</h2><button class="plain-icon" data-action="close" aria-label="Close dialog">${icon('close')}</button></header><div class="modal-body">${html}</div>`;
   if(!dialog.open)dialog.showModal();
+  motion.modalIn();
 }
+function closeModal(){motion.modalOut(()=>dialog.close());}
 function form(html,label){
   return `<form id="editor" class="stack">${html}<p class="error" role="alert"></p><div class="modal-actions">${btn('Cancel','close')}<button class="button primary">${label}</button></div></form>`;
 }
@@ -164,11 +168,11 @@ async function saveEditor(formNode){
   Object.assign(state,data,result);
   render();
   if(kind==='interaction')activity(id);
-  else dialog.close();
+  else closeModal();
   notify('Changes saved.');
 }
 function profile(){
-  modal(state.user.name,`<div class="stack"><p class="muted">Administrator</p>${state.demo?`<form id="switch" class="stack">${select('Demo account','userId',state.users.map(u=>[u.id,u.name]),state.user.id)}<button class="button primary">Switch Account</button></form>`:btn('Sign Out','logout','logout')}${btn('Notification Settings','go','settings','button','settings')}</div>`);
+  modal(state.user.name,`<div class="stack"><p class="muted">Administrator</p>${btn('Sign Out','logout','logout')}${btn('Notification Settings','go','settings','button','settings')}</div>`);
 }
 function notifications(){
   const f=openTasks().filter(f=>!f.owner||f.owner===state.user.id);
@@ -191,23 +195,54 @@ async function push(enable){
   }
   notify(enable?'Push enabled on this device.':'Push disabled on this device.');
 }
-function login(){
-  root.innerHTML=`<main class="login"><section class="card stack">${brand()}<h1>Sign in</h1><p class="muted">Sign in with your ChurchCare administrator account.</p><form id="login" class="stack">${field('Email','email','','email',true)}${field('Password','password','','password',true)}<p class="error" role="alert"></p><button class="button primary">Sign In</button></form></section></main>`;
+function login(demo){
+  root.innerHTML=`<main class="login"><div class="glow glow-a"></div><div class="glow glow-b"></div><section class="card stack">${brand()}<h1>Sign in</h1><p class="muted">Sign in with your ChurchCare administrator account.</p><form id="login" class="stack">${field('Email','email','',demo ? 'text' : 'email',true)}${field('Password','password','','password',true)}<p class="error" role="alert"></p><button class="button primary">Sign In</button></form>${demo?'<p class="muted login-hint">Demo sign-in: email <strong>admin</strong>, password <strong>admin</strong>.</p>':''}</section></main>`;
   root.querySelector('[name=email]').autocomplete='username';
   root.querySelector('[name=password]').autocomplete='current-password';
+  motion.loginIn();
 }
-async function initialize(){
-  try{state=await api('state');render();}
-  catch(error){if(error.status===401)login();else root.innerHTML=`<main class="content"><p class="error">${esc(error.message)}</p><button class="button" data-action="refresh">Try Again</button></main>`;}
+async function showLogin(){
+  state=null;
+  let config={};
+  try{config=await api('config');}catch{}
+  login(Boolean(config.demo));
+}
+async function initialize(first=false){
+  try{state=await api('state');render(first);}
+  catch(error){if(error.status===401)await showLogin();else root.innerHTML=`<main class="content"><p class="error">${esc(error.message)}</p><button class="button" data-action="refresh">Try Again</button></main>`;}
+}
+let transitioning=false,pendingTransition=false;
+async function transition(){
+  if(transitioning){pendingTransition=true;return;}
+  transitioning=true;
+  await motion.pageOut();
+  transitioning=false;
+  render();
+  window.scrollTo(0,0);
+  if(pendingTransition){pendingTransition=false;transition();}
+}
+document.addEventListener('pointerover',event=>{
+  const card=event.target.closest('.metric');
+  if(card)motion.lift(card,true);
+});
+document.addEventListener('pointerout',event=>{
+  const card=event.target.closest('.metric');
+  if(card&&!(event.relatedTarget&&card.contains(event.relatedTarget)))motion.lift(card,false);
+});
+function toggleMenu(){
+  const layoutNode=root.querySelector('.layout');
+  if(!layoutNode)return;
+  if(layoutNode.classList.contains('nav-open'))motion.drawerOut();
+  else motion.drawerIn();
 }
 document.addEventListener('click',async event=>{
   const button=event.target.closest('[data-action]');
   if(!button)return;
   const {action,id=''}=button.dataset;
   try{
-    if(action==='go'){if(dialog.open)dialog.close();navigate(id);}
-    if(action==='menu')root.querySelector('.layout').classList.toggle('nav-open');
-    if(action==='close')dialog.close();
+    if(action==='go'){if(dialog.open)closeModal();navigate(id);}
+    if(action==='menu')toggleMenu();
+    if(action==='close')closeModal();
     if(action==='record')record(id);
     if(action==='member')activity(id);
     if(action==='edit-member')editMember(id);
@@ -219,7 +254,7 @@ document.addEventListener('click',async event=>{
       const registration=await navigator.serviceWorker?.getRegistration().catch(()=>null);
       const sub=await registration?.pushManager?.getSubscription().catch(()=>null);
       if(sub)await api('push','DELETE',{endpoint:sub.endpoint});
-      await api('logout','POST');dialog.close();state=null;login();
+      await api('logout','POST');closeModal();await showLogin();
     }
     if(action==='push-enable'||action==='push-disable')await push(action==='push-enable');
     if(action==='refresh')await initialize();
@@ -228,7 +263,7 @@ document.addEventListener('click',async event=>{
 });
 document.addEventListener('submit',async event=>{
   const formNode=event.target;
-  if(!['editor','preferences','login','switch'].includes(formNode.id))return;
+  if(!['editor','preferences','login'].includes(formNode.id))return;
   event.preventDefault();
   if(busy)return;
   busy=true;
@@ -236,10 +271,10 @@ document.addEventListener('submit',async event=>{
   if(submit)submit.disabled=true;
   try{
     if(formNode.id==='editor')await saveEditor(formNode);
-    if(formNode.id==='login'||formNode.id==='switch'){
+    if(formNode.id==='login'){
       await api('login','POST',Object.fromEntries(new FormData(formNode)));
-      if(dialog.open)dialog.close();
-      await initialize();
+      if(dialog.open)closeModal();
+      await initialize(true);
     }
     if(formNode.id==='preferences'){
       const values=new FormData(formNode), preferences={telegram:values.get('telegram')?.trim() || '',birthdays:values.has('birthdays'),inactivity:values.has('inactivity'),followups:values.has('followups')};
@@ -250,10 +285,10 @@ document.addEventListener('submit',async event=>{
   }catch(error){
     if(error.status===409) {
       state=await api('state');
-      dialog.close();render();notify(error.message);
+      closeModal();render();notify(error.message);
     }else{
       const message=formNode.querySelector('.error');
-      if(message)message.textContent=error.message;
+      if(message){message.textContent=error.message;if(formNode.id==='login')motion.loginError();}
       else notify(error.message);
     }
   }finally{busy=false;if(submit)submit.disabled=false;}
@@ -261,6 +296,7 @@ document.addEventListener('submit',async event=>{
 function filterMembers(){
   const rows=document.querySelector('#member-results');
   if(rows)rows.innerHTML=memberRows(document.querySelector('#member-search').value,document.querySelector('#member-filter').value);
+  motion.listIn();
 }
 document.addEventListener('input',event=>{if(event.target.id==='member-search')filterMembers();});
 document.addEventListener('change',event=>{
@@ -271,7 +307,9 @@ document.addEventListener('change',event=>{
     event.target.form.elements.owner.value=member(event.target.value)?.owner || state.user.id;
   }
 });
-window.addEventListener('hashchange',()=>{render();window.scrollTo(0,0);});
+dialog.addEventListener('cancel',event=>{event.preventDefault();closeModal();});
+window.addEventListener('hashchange',transition);
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event;if(route()==='settings')render();});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
-initialize();
+motion.ready();
+initialize(true);

@@ -4,7 +4,7 @@ A lightweight church CRM for a small volunteer team. It uses Node.js 24, SQLite,
 
 ## Preview
 
-Run `npm start` and open http://localhost:3000. The demo starts signed in as Grace Wilson, uses fictional records in `demo.sqlite`, and does not send notifications. Use the account menu to try another demo administrator.
+Run `npm start` and open http://localhost:3000. Sign in with the demo administrator account **admin** / **admin**. The demo uses fictional records in `demo.sqlite` and does not send notifications.
 
 ## Run for your church
 
@@ -32,3 +32,7 @@ To revoke access, remove the administrator from `CRM_USERS` and restart. To inva
 - The server checks for birthdays, due follow-ups, and inactivity every minute in the church timezone. Three consecutive recorded services missed after a member was added automatically create a follow-up. Assigned alerts go to the assigned administrator. Unassigned alerts go to administrators who have opted into that reminder type.
 - Preferences are per administrator. The app tries that administrator’s registered push devices first and uses Telegram when none accept delivery. Push acceptance is determined by the push provider. Notifications use generic text and members’ details stay behind sign-in.
 - The installable shell can open offline. Reading and updating church records requires a connection, and the service worker does not cache those records.
+
+## Motion
+
+[GSAP](https://gsap.com) drives the login, dashboard, and page-transition animations. It is loaded as a plain `<script>` from `public/gsap.min.js` (there is no bundler), and every animation lives in `public/motion.js`, which is a no-op when GSAP is unavailable or the visitor prefers reduced motion. `npm install` copies the vendored build through `npm run vendor` (`scripts/vendor-gsap.js`). GSAP is licensed under the GreenSock "Standard no charge" license.

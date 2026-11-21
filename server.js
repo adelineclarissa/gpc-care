@@ -2,12 +2,16 @@ import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual, scryptSync, createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
-import { resolve, extname } from 'node:path';
+import { dirname, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { demo, empty } from './seed.js';
+
+const publicDir = join(dirname(fileURLToPath(import.meta.url)),'public');
 
 const production = Boolean(process.env.CRM_USERS);
 if (production && !/^https:\/\/[^/]+$/.test(process.env.CRM_ORIGIN || '')) throw Error('Set CRM_ORIGIN to the public HTTPS origin.');
-const users = production ? JSON.parse(process.env.CRM_USERS) : demo.users;
+const demoAdmin = {id:'admin',name:'Admin',email:'admin',password:'admin'};
+const users = production ? JSON.parse(process.env.CRM_USERS) : [demoAdmin,...demo.users];
 if (production && (!Array.isArray(users) || !users.length || new Set(users.map(u => u.id)).size !== users.length || new Set(users.map(u => u.email?.toLowerCase())).size !== users.length || users.some(u => !u.id || !u.name || !u.email || typeof u.password !== 'string' || u.password.length < 12))) throw Error('CRM_USERS requires unique IDs and emails, names, and passwords of at least 12 characters.');
 const day = () => new Intl.DateTimeFormat('en-CA',{timeZone:process.env.CRM_TIMEZONE || 'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 process.umask(0o077);
@@ -26,7 +30,7 @@ const vapid = process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY;
 const webpush = vapid ? (await import('web-push')).default : null;
 if(vapid) webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:admin@example.com',process.env.VAPID_PUBLIC_KEY,process.env.VAPID_PRIVATE_KEY);
 const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.woff2':'font/woff2','.webmanifest':'application/manifest+json'};
-const publicFiles=new Set(['/','/index.html','/styles.css','/app.js','/icons.js','/sw.js','/manifest.webmanifest','/icon-192.png','/icon-512.png','/dm-sans.woff2','/manrope.woff2']);
+const publicFiles=new Set(['/','/index.html','/styles.css','/app.js','/motion.js','/icons.js','/gsap.min.js','/sw.js','/manifest.webmanifest','/icon-192.png','/icon-512.png','/dm-sans.woff2','/manrope.woff2']);
 const attempts=new Map();
 function fail(message,status=400){throw Object.assign(Error(message),{status});}
 async function body(req){
@@ -58,22 +62,22 @@ createServer(async(req,res)=>{
     const path=new URL(req.url,'http://localhost').pathname;
     const token=req.headers.cookie?.match(/(?:^|;\s*)crm=([a-f0-9]{64})(?:;|$)/)?.[1];
     const session=token && db.prepare('SELECT user FROM sessions WHERE token=? AND expires>?').get(digest(token),Date.now());
-    let user=authUsers.find(u=>u.id===session?.user);
-    if(!production && !user) user=authUsers[0];
+    const user=authUsers.find(u=>u.id===session?.user);
     if(path.startsWith('/api/') && req.method!=='GET' && req.headers.origin){
       if(req.headers.origin !== (process.env.CRM_ORIGIN || ('http://'+req.headers.host)) && (production || req.headers['sec-fetch-site']!=='same-origin')) fail('Invalid origin.',403);
     }
     if(path==='/api/login' && req.method==='POST'){
-      const {email,password,userId}=await body(req);
+      const {email,password}=await body(req);
       const key=req.socket.remoteAddress;
       const now=Date.now();
       for(const [ip, attempt] of attempts) if(attempt.until<now) attempts.delete(ip);
       const old=attempts.get(key) || {count:0,until:now+600000};
       if(production && old.count>=10) fail('Try again in 10 minutes.',429);
       if(production) attempts.set(key,{...old,count:old.count+1});
-      const candidate=authUsers.find(u=>production ? u.email.toLowerCase()===String(email).toLowerCase().trim() : u.id===userId);
-      const hash=production ? scryptSync(String(password || '').slice(0,1024),candidate?.id || 'invalid-login',64) : null;
-      if(!candidate || (production && !timingSafeEqual(hash,candidate.hash))) fail('Invalid email or password.',401);
+      const value=String(email || '').toLowerCase().trim();
+      const candidate=authUsers.find(u=>u.email?.toLowerCase()===value || u.id.toLowerCase()===value);
+      const hash=scryptSync(String(password || '').slice(0,1024),candidate?.id || 'invalid-login',64);
+      if(!candidate || !candidate.hash || !timingSafeEqual(hash,candidate.hash)) fail('Invalid email or password.',401);
       attempts.delete(key);
       const newToken=randomBytes(32).toString('hex');
       db.prepare('DELETE FROM sessions WHERE expires<=?').run(now);
@@ -81,6 +85,7 @@ createServer(async(req,res)=>{
       res.setHeader('Set-Cookie','crm='+newToken+'; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800'+(production?'; Secure':''));
       return json(200,{ok:true});
     }
+    if(path==='/api/config' && req.method==='GET') return json(200,{demo:!production});
     if(path.startsWith('/api/') && !user) fail('Sign in to continue.',401);
     if(path==='/api/logout' && req.method==='POST'){
       if(token) db.prepare('DELETE FROM sessions WHERE token=?').run(digest(token));
@@ -122,8 +127,9 @@ createServer(async(req,res)=>{
     }
     if(!publicFiles.has(path) || req.method!=='GET') return json(404,{error:'Page not found.'});
     const file=path==='/' ? '/index.html' : path;
-    res.writeHead(200,{'Content-Type':types[extname(file)],'Cache-Control':'no-cache'});
-    res.end(await readFile(resolve('public','.'+file)));
+    const contents=await readFile(join(publicDir,file));
+    res.writeHead(200,{'Content-Type':types[extname(file)],'Cache-Control':'no-cache','Content-Length':contents.byteLength});
+    res.end(contents);
   }catch(error){if(!error.status) console.error(error); if(!res.headersSent) json(error.status || 500,{error:error.status ? error.message : 'Something went wrong.'}); else res.end();}
 }).listen(process.env.PORT || 3000,'0.0.0.0',()=>console.log('ChurchCare listening on port '+(process.env.PORT || 3000)));
 

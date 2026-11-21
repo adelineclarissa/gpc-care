@@ -1,5 +1,5 @@
-const cacheName='churchcare-shell-v2';
-const shell=['/','/styles.css','/app.js','/icons.js','/manifest.webmanifest','/icon-192.png','/icon-512.png','/dm-sans.woff2','/manrope.woff2'];
+const cacheName='churchcare-shell-v4';
+const shell=['/','/styles.css','/app.js','/motion.js','/icons.js','/gsap.min.js','/manifest.webmanifest','/icon-192.png','/icon-512.png','/dm-sans.woff2','/manrope.woff2'];
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(cacheName).then(cache=>cache.addAll(shell)).then(()=>self.skipWaiting()));
 });
